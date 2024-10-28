@@ -1,0 +1,93 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Mypy cache
+.mypy_cache/
+
+# PyInstaller build directories
+build/
+dist/
+
+# PyInstaller spec files
+*.spec
+
+# User-specific settings
+anyoverlay_settings.json
+
+# Logs and reports
+*.log
+
+# Environment files
+.env
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Ignore virtual environments
+bin/
+Scripts/
+Include/
+Lib/
+Lib64/
+local/
+pyvenv.cfg
+
+# System files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE or editor settings
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Ignore test coverage files
+htmlcov/
+.tox/
+.coverage
+coverage.xml
+
+# Ignore temporary files
+*.tmp
+*.temp
+*.bak
+*.swp
+*.orig
+*.ipynb_checkpoints
+
+# Ignore compiled files
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Ignore distribution archives
+*.egg
+*.egg-info/
+dist/
+eggs/
+parts/
+sdist/
+develop-eggs/
+
+# Ignore wheels
+*.whl
+
+# Ignore pytest cache
+.pytest_cache/
+
+# Ignore Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Ignore mypy cache
+.mypy_cache/
+
+# Exclude the settings file if it's generated at runtime
+anyoverlay_settings.json
