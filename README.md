@@ -1,5 +1,8 @@
 # AnyOverlay
 
+![image](https://github.com/user-attachments/assets/18b0ac6e-353d-4a93-b680-d6ec9f6b34fe)
+
+
 I always hated that there was no good program to simply overlay images over games. I loved seeing Streamer's custom overlays, especially in games like Overwatch, but I saw that many people were disappointed that there was no way to use these overlays in game. To solve this problem, I created AnyOverlay.
 
 You can import any image, and it will be displayed on top of any game. Any opacity, any image, even GIFs! (It even supports .WEBP, because it's really not a bad format, it just has poor support!)
