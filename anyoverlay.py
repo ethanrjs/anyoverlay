@@ -1006,11 +1006,7 @@ class AnyOverlay(QtWidgets.QWidget):
         self.add_rendering_options()
         
         self.tabs.addTab(self.rendering_tab, "Rendering Options")
-        
-        # Update scale factor input enabled state based on initial scaling mode
-        self.update_scale_factor_state()
 
-        
 
         self.gif_tab = QtWidgets.QWidget()
         self.gif_layout = QtWidgets.QVBoxLayout()
