@@ -555,17 +555,6 @@ class OverlayWindow(QtWidgets.QWidget):
             self.dragging = False
             self.resizing = False
 
-    def wheelEvent(self, event):
-        if self.edit_mode:
-            angle = event.angleDelta().y()
-            if angle > 0:
-                
-                self.increase_scale()
-            elif angle < 0:
-                
-
-                self.decrease_scale()
-
     def increase_scale(self):
         """
         Increases the scale factor of the overlay image.
@@ -1013,17 +1002,15 @@ class AnyOverlay(QtWidgets.QWidget):
         self.rendering_layout = QtWidgets.QVBoxLayout()
         self.rendering_layout.setAlignment(QtCore.Qt.AlignTop)
         self.rendering_tab.setLayout(self.rendering_layout)
-
-        scaling_mode_layout = QtWidgets.QHBoxLayout()
-        scaling_mode_label = QtWidgets.QLabel('Scaling Mode:')
-        scaling_mode_layout.addWidget(scaling_mode_label)
-        self.scaling_mode_combo = QtWidgets.QComboBox()
-        self.scaling_mode_combo.addItems(['Fit to Screen', 'Stretch to Fill', 'Center', 'Tile'])
-        self.scaling_mode_combo.currentIndexChanged.connect(self.on_scaling_mode_changed)
-        scaling_mode_layout.addWidget(self.scaling_mode_combo)
-        self.rendering_layout.addLayout(scaling_mode_layout)
-
+        
+        self.add_rendering_options()
+        
         self.tabs.addTab(self.rendering_tab, "Rendering Options")
+        
+        # Update scale factor input enabled state based on initial scaling mode
+        self.update_scale_factor_state()
+
+        
 
         self.gif_tab = QtWidgets.QWidget()
         self.gif_layout = QtWidgets.QVBoxLayout()
@@ -1122,14 +1109,37 @@ class AnyOverlay(QtWidgets.QWidget):
         bg_color_layout.addWidget(self.bg_color_input)
         self.advanced_layout.addLayout(bg_color_layout)
 
-        scale_limits_layout = QtWidgets.QHBoxLayout()
-        scale_limits_label = QtWidgets.QLabel('Enable Scale Limits:')
-        scale_limits_layout.addWidget(scale_limits_label)
-        self.scale_limits_checkbox = QtWidgets.QCheckBox()
-        self.scale_limits_checkbox.setChecked(self.advanced_settings.get('enable_scale_limits', True))
-        self.scale_limits_checkbox.stateChanged.connect(self.on_scale_limits_changed)
-        scale_limits_layout.addWidget(self.scale_limits_checkbox)
-        self.advanced_layout.addLayout(scale_limits_layout)
+    def add_rendering_options(self):
+        scaling_mode_layout = QtWidgets.QHBoxLayout()
+        scaling_mode_label = QtWidgets.QLabel('Scaling Mode:')
+        scaling_mode_layout.addWidget(scaling_mode_label)
+        self.scaling_mode_combo = QtWidgets.QComboBox()
+        self.scaling_mode_combo.addItems(['Fit to Screen', 'Stretch to Fill', 'Center', 'Tile'])
+        self.scaling_mode_combo.currentIndexChanged.connect(self.on_scaling_mode_changed)
+        scaling_mode_layout.addWidget(self.scaling_mode_combo)
+        self.rendering_layout.addLayout(scaling_mode_layout)
+
+        # Add new scale factor control
+        scale_factor_layout = QtWidgets.QHBoxLayout()
+        scale_factor_label = QtWidgets.QLabel('Scale Factor:')
+        scale_factor_layout.addWidget(scale_factor_label)
+        
+        self.scale_factor_input = QtWidgets.QDoubleSpinBox()
+        self.scale_factor_input.setRange(0.01, 500.0)
+        self.scale_factor_input.setSingleStep(0.1)
+        self.scale_factor_input.setValue(self.advanced_settings.get('scale_factor', 1.0))
+        self.scale_factor_input.setDecimals(2)
+        self.scale_factor_input.valueChanged.connect(self.on_scale_factor_changed)
+        scale_factor_layout.addWidget(self.scale_factor_input)
+        
+        self.rendering_layout.addLayout(scale_factor_layout)
+
+    def on_scale_factor_changed(self, value):
+        self.advanced_settings['scale_factor'] = value
+        self.save_settings()
+        if self.is_overlay_visible and self.overlay_window:
+            self.overlay_window.scale_factor = value
+            self.overlay_window.initImage()
 
     def on_scale_limits_changed(self, state):
         self.advanced_settings['enable_scale_limits'] = bool(state)
@@ -1467,6 +1477,9 @@ class AnyOverlay(QtWidgets.QWidget):
                     self.transparency_input.setText(str(self.advanced_settings['transparency']))
                     self.bg_color_input.setText(self.advanced_settings['background_color'])
                     self.scale_limits_checkbox.setChecked(self.advanced_settings.get('enable_scale_limits', True))
+                    scale_factor = self.advanced_settings.get('scale_factor', 1.0)
+                    if hasattr(self, 'scale_factor_input'):
+                        self.scale_factor_input.setValue(scale_factor)
 
             except Exception as e:
                 print(f"Error loading settings: {e}")
