@@ -42,11 +42,25 @@ class TiledGIFWidget(QtWidgets.QWidget):
         frame = self.movie.currentPixmap()
         if frame.isNull():
             return
-        frame_size = frame.size()
+        tile_scale = self.advanced_settings.get('tile_scale', 1.0)
+        if tile_scale <= 0:
+            tile_scale = 1.0  # Prevent invalid scale factors
+
+        scaled_frame = frame.scaled(
+            int(frame.width() * tile_scale),
+            int(frame.height() * tile_scale),
+            QtCore.Qt.KeepAspectRatio,
+            QtCore.Qt.SmoothTransformation
+        )
+
+        frame_size = scaled_frame.size()
+
         for x in range(0, self.width(), frame_size.width()):
             for y in range(0, self.height(), frame_size.height()):
-                painter.drawPixmap(x, y, frame)
+                painter.drawPixmap(x, y, scaled_frame)
+
         painter.end()
+
 
 
 class OverlayWindow(QtWidgets.QWidget):
