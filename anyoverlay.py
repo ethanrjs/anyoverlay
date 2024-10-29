@@ -3,7 +3,6 @@ import json
 import os
 import ctypes
 from PyQt5 import QtWidgets, QtGui, QtCore
-import keyboard
 
 if sys.platform == "win32":
     from ctypes.wintypes import HWND, LONG, DWORD, BOOL
@@ -27,41 +26,298 @@ if sys.platform == "win32":
     SetLayeredWindowAttributes.restype = BOOL
     SetLayeredWindowAttributes.argtypes = [HWND, DWORD, ctypes.c_byte, DWORD]
 
+class CachedImageRenderer:
+    """Handles efficient image loading, caching and scaling"""
+    def __init__(self, advanced_settings=None):
+        self.advanced_settings = advanced_settings or {}
+        self.cache = {}
+        self.cache_order = []
+        self.max_cache_entries = self.advanced_settings.get('cache_size', 100)
+        
+    def clear_cache(self):
+        """Clear the image cache"""
+        self.cache.clear()
+        self.cache_order.clear()
+
+    def load_image(self, image_path, target_size=None, scaling_mode='fit', scale_factor=1.0):
+        """Load and scale image efficiently"""
+        cache_key = (image_path, target_size, scaling_mode, scale_factor)
+        
+        
+        if cache_key in self.cache:
+            self.cache_order.remove(cache_key)
+            self.cache_order.append(cache_key)
+            return self.cache[cache_key]
+            
+        
+        image_reader = QtGui.QImageReader(image_path)
+        if target_size:
+            image_reader.setScaledSize(target_size)
+        
+        
+        if self.advanced_settings.get('enable_hardware_acceleration', True):
+            image_reader.setAutoTransform(True)
+            
+        image = image_reader.read()
+        if image.isNull():
+            return None
+            
+        
+        if scaling_mode == 'fit':
+            scaled_width = max(1, int(target_size.width() * scale_factor))
+            scaled_height = max(1, int(target_size.height() * scale_factor))
+            image = image.scaled(
+                scaled_width, 
+                scaled_height,
+                QtCore.Qt.KeepAspectRatio,
+                QtCore.Qt.SmoothTransformation if self.advanced_settings.get('enable_antialiasing', True)
+                else QtCore.Qt.FastTransformation
+            )
+        elif scaling_mode == 'stretch':
+            scaled_width = max(1, int(target_size.width() * scale_factor))
+            scaled_height = max(1, int(target_size.height() * scale_factor))
+            image = image.scaled(
+                scaled_width,
+                scaled_height,
+                QtCore.Qt.IgnoreAspectRatio,
+                QtCore.Qt.SmoothTransformation if self.advanced_settings.get('enable_antialiasing', True)
+                else QtCore.Qt.FastTransformation
+            )
+            
+        
+        pixmap = QtGui.QPixmap.fromImage(image)
+        
+        
+        if len(self.cache) >= self.max_cache_entries:
+            oldest_key = self.cache_order.pop(0)
+            del self.cache[oldest_key]
+            
+        
+        self.cache[cache_key] = pixmap
+        self.cache_order.append(cache_key)
+        
+        return pixmap
+    
+class TiledImageWidget(QtWidgets.QWidget):
+    """Efficient widget for displaying tiled images"""
+    def __init__(self, image_path, parent=None, advanced_settings=None):
+        super().__init__(parent)
+        self.image_path = image_path
+        self.advanced_settings = advanced_settings or {}
+        self.renderer = CachedImageRenderer(advanced_settings)
+        
+        
+        self.tile_cache = {}
+        self.tile_positions = []
+        self.last_size = None
+        self.last_tile_size = None
+        
+        
+        self.setAttribute(QtCore.Qt.WA_PaintOnScreen, False)
+        self.setAttribute(QtCore.Qt.WA_OpaquePaintEvent, True)
+        
+        
+        self.background_buffer = None
+        self.buffer_size = None
+        
+    def calculate_tile_positions(self, tile_size):
+        """Pre-calculate tile positions"""
+        if (self.size() == self.last_size and 
+            tile_size == self.last_tile_size):
+            return
+            
+        self.tile_positions.clear()
+        for x in range(0, self.width(), tile_size.width()):
+            for y in range(0, self.height(), tile_size.height()):
+                self.tile_positions.append(QtCore.QPoint(x, y))
+                
+        self.last_size = self.size()
+        self.last_tile_size = tile_size
+        
+    def update_background_buffer(self, base_pixmap):
+        """Update the background buffer for faster rendering"""
+        current_size = self.size()
+        if (self.background_buffer is None or 
+            self.buffer_size != current_size):
+            self.background_buffer = QtGui.QPixmap(current_size)
+            self.buffer_size = current_size
+            
+        self.background_buffer.fill(QtCore.Qt.transparent)
+        painter = QtGui.QPainter(self.background_buffer)
+        
+        if self.advanced_settings.get('enable_hardware_acceleration', True):
+            painter.setRenderHint(QtGui.QPainter.SmoothPixmapTransform)
+            
+        for pos in self.tile_positions:
+            painter.drawPixmap(pos, base_pixmap)
+            
+        painter.end()
+        
+    def paintEvent(self, event):
+        
+        tile_scale = max(0.01, self.advanced_settings.get('tile_scale', 1.0))
+        base_size = QtCore.QSize(
+            int(self.width() * tile_scale),
+            int(self.height() * tile_scale)
+        )
+        
+        base_pixmap = self.renderer.load_image(
+            self.image_path,
+            base_size,
+            'fit',
+            tile_scale
+        )
+        
+        if base_pixmap is None:
+            return
+            
+        
+        self.calculate_tile_positions(base_pixmap.size())
+        
+        
+        self.update_background_buffer(base_pixmap)
+        
+        
+        painter = QtGui.QPainter(self)
+        painter.drawPixmap(0, 0, self.background_buffer)
+        painter.end()
+        
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        
+        self.background_buffer = None
+        self.buffer_size = None
+
 
 class TiledGIFWidget(QtWidgets.QWidget):
     def __init__(self, movie, parent=None, advanced_settings=None):
         super().__init__(parent)
         self.movie = movie
         self.advanced_settings = advanced_settings or {}
-        self.movie.frameChanged.connect(self.repaint)
+        
+        
+        self.max_cache_size = self.advanced_settings.get('cache_size', 100)
+        self.scaled_frame_cache = {}
+        self.frame_cache_order = []
+        
+        
+        self.tile_positions = []
+        self.last_size = None
+        self.last_frame_size = None
+        
+        
+        self.setAttribute(QtCore.Qt.WA_PaintOnScreen, False)
+        self.setAttribute(QtCore.Qt.WA_OpaquePaintEvent, True)
+        
+        
+        self.update_interval = max(self.movie.nextFrameDelay(), 20)  
+        self.frame_timer = QtCore.QTimer(self)
+        self.frame_timer.timeout.connect(self.update_frame)
+        self.frame_timer.setInterval(self.update_interval)
+        
+        
+        self.background_buffer = None
+        
+        
+        self.movie.setCacheMode(QtGui.QMovie.CacheAll)
         self.movie.start()
 
-    def paintEvent(self, event):
-        painter = QtGui.QPainter(self)
-        painter.setRenderHint(QtGui.QPainter.Antialiasing, self.advanced_settings.get('enable_antialiasing', True))
-        frame = self.movie.currentPixmap()
-        if frame.isNull():
+    def update_frame(self):
+        if not self.isVisible():
             return
-        tile_scale = self.advanced_settings.get('tile_scale', 1.0)
-        if tile_scale <= 0:
-            tile_scale = 1.0  # Prevent invalid scale factors
+        self.repaint()
 
-        scaled_frame = frame.scaled(
-            int(frame.width() * tile_scale),
-            int(frame.height() * tile_scale),
-            QtCore.Qt.KeepAspectRatio,
-            QtCore.Qt.SmoothTransformation
-        )
-
-        frame_size = scaled_frame.size()
-
+    def calculate_tile_positions(self, frame_size):
+        """Pre-calculate tile positions for current widget size"""
+        if (self.size() == self.last_size and 
+            frame_size == self.last_frame_size):
+            return
+            
+        self.tile_positions.clear()
         for x in range(0, self.width(), frame_size.width()):
             for y in range(0, self.height(), frame_size.height()):
-                painter.drawPixmap(x, y, scaled_frame)
+                self.tile_positions.append(QtCore.QPoint(x, y))
+                
+        self.last_size = self.size()
+        self.last_frame_size = frame_size
 
+    def get_scaled_frame(self, frame, frame_number, tile_scale):
+        """Get scaled frame from cache or create new one"""
+        cache_key = (frame_number, tile_scale)
+        
+        
+        if cache_key in self.scaled_frame_cache:
+            
+            self.frame_cache_order.remove(cache_key)
+            self.frame_cache_order.append(cache_key)
+            return self.scaled_frame_cache[cache_key]
+            
+        
+        scaled_frame = frame.scaled(
+            max(1, int(frame.width() * tile_scale)),
+            max(1, int(frame.height() * tile_scale)),
+            QtCore.Qt.KeepAspectRatio,
+            QtCore.Qt.SmoothTransformation if self.advanced_settings.get('enable_antialiasing', True)
+            else QtCore.Qt.FastTransformation
+        )
+        
+        
+        if len(self.scaled_frame_cache) >= self.max_cache_size:
+            oldest_key = self.frame_cache_order.pop(0)
+            del self.scaled_frame_cache[oldest_key]
+            
+        
+        self.scaled_frame_cache[cache_key] = scaled_frame
+        self.frame_cache_order.append(cache_key)
+        
+        return scaled_frame
+
+    def paintEvent(self, event):
+        current_frame = self.movie.currentPixmap()
+        if current_frame.isNull():
+            return
+            
+        painter = QtGui.QPainter(self)
+        
+        
+        if self.advanced_settings.get('enable_hardware_acceleration', True):
+            painter.setRenderHint(QtGui.QPainter.SmoothPixmapTransform)
+            
+        
+        tile_scale = max(0.01, self.advanced_settings.get('tile_scale', 1.0))
+        scaled_frame = self.get_scaled_frame(
+            current_frame,
+            self.movie.currentFrameNumber(),
+            tile_scale
+        )
+        
+        
+        self.calculate_tile_positions(scaled_frame.size())
+        
+        
+        for pos in self.tile_positions:
+            painter.drawPixmap(pos, scaled_frame)
+            
         painter.end()
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not self.frame_timer.isActive():
+            self.frame_timer.start()
 
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        if self.frame_timer.isActive():
+            self.frame_timer.stop()
+
+    def __del__(self):
+        if hasattr(self, 'frame_timer'):
+            self.frame_timer.stop()
+        if hasattr(self, 'movie'):
+            self.movie.stop()
+            del self.movie
+        self.scaled_frame_cache.clear()
+        self.frame_cache_order.clear()
 
 class OverlayWindow(QtWidgets.QWidget):
     def __init__(self, image_path, screen_geometry, opacity=1.0, gif_speed=100, scaling_mode='fit', advanced_settings=None):
@@ -76,7 +332,7 @@ class OverlayWindow(QtWidgets.QWidget):
         self.dragging = False
         self.resizing = False
         self.last_mouse_pos = None
-        self.scale_factor = 1.0
+        self.scale_factor = self.advanced_settings.get('scale_factor', 1.0)  
         self.initUI()
 
     def initUI(self):
@@ -107,7 +363,6 @@ class OverlayWindow(QtWidgets.QWidget):
                     child.widget().deleteLater()
         self.layout().addWidget(self.label)
 
-        
         bg_color = self.advanced_settings.get('background_color', '#000000')
         transparency = self.advanced_settings.get('transparency', 0)
         color = QtGui.QColor(bg_color)
@@ -117,7 +372,6 @@ class OverlayWindow(QtWidgets.QWidget):
         self.setPalette(palette)
         self.setAutoFillBackground(True)
 
-        
         update_interval = self.advanced_settings.get('update_interval', 0)
         if update_interval > 0:
             self.update_timer = QtCore.QTimer(self)
@@ -140,8 +394,7 @@ class OverlayWindow(QtWidgets.QWidget):
             self.movie.stop()
             del self.movie
 
-        
-        QtGui.QPixmapCache.setCacheLimit(self.advanced_settings['cache_size'] * 1024)
+        QtGui.QPixmapCache.setCacheLimit(self.advanced_settings.get('cache_size', 100) * 1024)
 
         if self.image_path.lower().endswith('.gif'):
             self.movie = QtGui.QMovie(self.image_path)
@@ -177,20 +430,35 @@ class OverlayWindow(QtWidgets.QWidget):
                 return
 
             if self.scaling_mode == 'fit':
-                scaled_pixmap = pixmap.scaled(self.size() * self.scale_factor, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)
+                scaled_width = max(1, int(self.size().width() * self.scale_factor))
+                scaled_height = max(1, int(self.size().height() * self.scale_factor))
+                scaled_pixmap = pixmap.scaled(
+                    QtCore.QSize(scaled_width, scaled_height),
+                    QtCore.Qt.KeepAspectRatio,
+                    QtCore.Qt.SmoothTransformation
+                )
             elif self.scaling_mode == 'stretch':
-                scaled_pixmap = pixmap.scaled(self.size() * self.scale_factor, QtCore.Qt.IgnoreAspectRatio, QtCore.Qt.SmoothTransformation)
+                scaled_width = max(1, int(self.size().width() * self.scale_factor))
+                scaled_height = max(1, int(self.size().height() * self.scale_factor))
+                scaled_pixmap = pixmap.scaled(
+                    QtCore.QSize(scaled_width, scaled_height),
+                    QtCore.Qt.IgnoreAspectRatio,
+                    QtCore.Qt.SmoothTransformation
+                )
             elif self.scaling_mode == 'center':
                 scaled_pixmap = pixmap
             elif self.scaling_mode == 'tile':
                 tile_size = pixmap.size()
                 tile_scale = self.advanced_settings.get('tile_scale', 1.0)
                 if tile_scale != 1.0:
-                    tile_size = QtCore.QSize(int(tile_size.width() * tile_scale),
-                                             int(tile_size.height() * tile_scale))
+                    tile_width = max(1, int(tile_size.width() * tile_scale))
+                    tile_height = max(1, int(tile_size.height() * tile_scale))
+                    tile_size = QtCore.QSize(tile_width, tile_height)
                     pixmap = pixmap.scaled(tile_size, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)
                 window_size = self.size()
                 tiled_pixmap = QtGui.QPixmap(window_size)
+                tiled_pixmap.fill(QtCore.Qt.transparent)  
+
                 painter = QtGui.QPainter(tiled_pixmap)
                 painter.setRenderHint(QtGui.QPainter.Antialiasing, self.advanced_settings.get('enable_antialiasing', True))
                 for x in range(0, window_size.width(), pixmap.width()):
@@ -258,21 +526,6 @@ class OverlayWindow(QtWidgets.QWidget):
         elif event.key() == QtCore.Qt.Key_Delete:
             self.deleteLater()
 
-    # def wheelEvent(self, event):
-    #     if self.edit_mode:
-    #         delta = event.angleDelta().y()
-    #         if delta > 0:
-    #             self.scale_factor += 0.1
-    #         else:
-    #             self.scale_factor -= 0.1
-    #         # Handle scale limits based on advanced settings
-    #         if self.advanced_settings.get('enable_scale_limits', True):
-    #             self.scale_factor = max(0.1, min(self.scale_factor, 10.0))  # Limit scale factor
-    #         else:
-    #             # Prevent scale_factor from becoming zero or negative
-    #             self.scale_factor = max(0.01, self.scale_factor)
-    #         self.initImage()
-
     def mousePressEvent(self, event):
         if self.edit_mode:
             if event.button() == QtCore.Qt.LeftButton:
@@ -295,11 +548,69 @@ class OverlayWindow(QtWidgets.QWidget):
                 self.resize(new_width, new_height)
                 self.last_mouse_pos = event.globalPos()
                 self.initImage()
+        super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
         if self.edit_mode:
             self.dragging = False
             self.resizing = False
+
+    def wheelEvent(self, event):
+        if self.edit_mode:
+            angle = event.angleDelta().y()
+            if angle > 0:
+                
+                self.increase_scale()
+            elif angle < 0:
+                
+
+                self.decrease_scale()
+
+    def increase_scale(self):
+        """
+        Increases the scale factor of the overlay image.
+        """
+        if self.scaling_mode == 'tile':
+            current_scale = self.advanced_settings.get('tile_scale', 1.0)
+            new_scale = current_scale + 0.1
+            if self.advanced_settings.get('enable_scale_limits', True):
+                new_scale = min(new_scale, 10.0)  
+            self.advanced_settings['tile_scale'] = new_scale
+        else:
+            new_scale = self.advanced_settings.get('scale_factor', 1.0) + 0.1
+            if self.advanced_settings.get('enable_scale_limits', True):
+                new_scale = min(new_scale, 10.0)  
+            self.advanced_settings['scale_factor'] = new_scale
+
+        self.save_settings()
+        if self.scaling_mode == 'tile':
+            self.advanced_settings['tile_scale'] = self.advanced_settings['tile_scale']
+        self.initImage()
+
+    def decrease_scale(self):
+        """
+        Decreases the scale factor of the overlay image.
+        """
+        if self.scaling_mode == 'tile':
+            current_scale = self.advanced_settings.get('tile_scale', 1.0)
+            new_scale = current_scale - 0.1
+            if self.advanced_settings.get('enable_scale_limits', True):
+                new_scale = max(new_scale, 0.1)  
+            self.advanced_settings['tile_scale'] = new_scale
+        else:
+            new_scale = self.advanced_settings.get('scale_factor', 1.0) - 0.1
+            if self.advanced_settings.get('enable_scale_limits', True):
+                new_scale = max(new_scale, 0.1)  
+            self.advanced_settings['scale_factor'] = new_scale
+
+        self.save_settings()
+        if self.scaling_mode == 'tile':
+            self.advanced_settings['tile_scale'] = self.advanced_settings['tile_scale']
+        self.initImage()
+
+    def save_settings(self):
+        
+        pass
 
 
 class MediaGallery(QtWidgets.QDialog):
@@ -517,6 +828,66 @@ class MediaGallery(QtWidgets.QDialog):
         else:
             super().keyPressEvent(event)
 
+class OptimizedImageOverlay(OverlayWindow):
+    """Enhanced overlay window with optimized image rendering"""
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.renderer = CachedImageRenderer(self.advanced_settings)
+        
+    def initImage(self):
+        if hasattr(self, 'label'):
+            self.label.setParent(None)
+            del self.label
+            
+        if self.image_path.lower().endswith('.gif'):
+            
+            self.initGifImage()
+        else:
+            
+            self.initStillImage()
+            
+    def initStillImage(self):
+        
+        if self.scaling_mode == 'tile':
+            self.label = TiledImageWidget(
+                self.image_path,
+                self,
+                self.advanced_settings
+            )
+        else:
+            self.label = QtWidgets.QLabel(self)
+            pixmap = self.renderer.load_image(
+                self.image_path,
+                self.size(),
+                self.scaling_mode,
+                self.scale_factor
+            )
+            
+            if pixmap:
+                self.label.setPixmap(pixmap)
+                self.label.setAlignment(QtCore.Qt.AlignCenter)
+                self.label.setStyleSheet("background-color: rgba(0, 0, 0, 0);")
+                
+        
+        if not self.layout():
+            layout = QtWidgets.QVBoxLayout()
+            layout.setContentsMargins(0, 0, 0, 0)
+            self.setLayout(layout)
+        self.layout().addWidget(self.label)
+        
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        
+        if hasattr(self, 'label') and not isinstance(self.label, TiledImageWidget):
+            if not self.image_path.lower().endswith('.gif'):
+                pixmap = self.renderer.load_image(
+                    self.image_path,
+                    self.size(),
+                    self.scaling_mode,
+                    self.scale_factor
+                )
+                if pixmap:
+                    self.label.setPixmap(pixmap)
 
 class AnyOverlay(QtWidgets.QWidget):
     overlay_toggle_signal = QtCore.pyqtSignal()
@@ -549,6 +920,7 @@ class AnyOverlay(QtWidgets.QWidget):
             'transparency': 0,
             'background_color': '#000000',
             'enable_scale_limits': True,
+            'scale_factor': 1.0  
         }
         self.initUI()
         self.load_settings()
@@ -833,7 +1205,7 @@ class AnyOverlay(QtWidgets.QWidget):
         gallery = MediaGallery(self.overlays_dir, self)
         if gallery.exec_() == QtWidgets.QDialog.Accepted:
             self.image_path = gallery.selected_image_path
-            self.is_gif = self.image_path.lower().endswith('.gif')
+            self.is_gif = self.image_path.lower().endswith('.gif') if self.image_path else False
             self.update_gif_options_visibility()
             self.save_settings()
             if self.is_overlay_visible:
@@ -849,9 +1221,11 @@ class AnyOverlay(QtWidgets.QWidget):
     def toggle_edit_mode(self, checked):
         self.edit_mode = checked
         if self.edit_mode:
-            self.edit_mode_label.setText('Edit Mode Active: Use mouse to move/resize. Press Esc to exit.')
+            self.edit_mode_label.setText('Edit Mode Active: Use mouse to move/resize. Scroll to scale. Press Esc to exit.')
+            self.edit_mode_button.setChecked(True)
         else:
             self.edit_mode_label.setText('')
+            self.edit_mode_button.setChecked(False)
         if self.is_overlay_visible and self.overlay_window:
             self.overlay_window.set_edit_mode(self.edit_mode)
 
@@ -896,6 +1270,7 @@ class AnyOverlay(QtWidgets.QWidget):
             self.overlay_window.setGifSpeed(self.gif_speed)
             self.overlay_window.setScalingMode(self.scaling_mode)
             self.overlay_window.advanced_settings = self.advanced_settings
+            self.overlay_window.scale_factor = self.advanced_settings.get('scale_factor', 1.0)
             self.overlay_window.initImage()
             self.overlay_window.setImage(self.image_path)
 
@@ -911,7 +1286,12 @@ class AnyOverlay(QtWidgets.QWidget):
         self.is_overlay_visible = False
 
     def start_hotkey_listener(self):
-        keyboard.add_hotkey(self.global_hotkey, lambda: self.overlay_toggle_signal.emit())
+        try:
+            import keyboard
+            keyboard.add_hotkey(self.global_hotkey, lambda: self.overlay_toggle_signal.emit())
+        except ImportError:
+            QtWidgets.QMessageBox.warning(self, "Error", "The 'keyboard' module is required for hotkey functionality.")
+            self.global_hotkey = None
 
     def get_screen_geometry(self):
         screens = QtWidgets.QApplication.screens()
@@ -954,14 +1334,20 @@ class AnyOverlay(QtWidgets.QWidget):
 
     def on_set_hotkey(self):
         self.global_hotkey = self.hotkey_entry.text()
-        keyboard.unhook_all_hotkeys()
-        self.start_hotkey_listener()
-        self.save_settings()
+        if self.global_hotkey:
+            try:
+                import keyboard
+                keyboard.unhook_all_hotkeys()
+                keyboard.add_hotkey(self.global_hotkey, lambda: self.overlay_toggle_signal.emit())
+                self.save_settings()
+            except Exception as e:
+                QtWidgets.QMessageBox.warning(self, "Error", f"Failed to set hotkey: {e}")
+        else:
+            QtWidgets.QMessageBox.warning(self, "Invalid Hotkey", "Hotkey cannot be empty.")
 
     def on_hw_accel_changed(self, state):
         self.advanced_settings['enable_hardware_acceleration'] = bool(state)
         self.save_settings()
-        
 
     def on_update_interval_changed(self):
         try:
@@ -1011,7 +1397,7 @@ class AnyOverlay(QtWidgets.QWidget):
             value = int(self.max_memory_input.text())
             self.advanced_settings['max_memory_usage'] = value
             self.save_settings()
-            
+
         except ValueError:
             QtWidgets.QMessageBox.warning(self, "Invalid Value", "Please enter a valid integer.")
             self.max_memory_input.setText(str(self.advanced_settings['max_memory_usage']))
@@ -1060,6 +1446,7 @@ class AnyOverlay(QtWidgets.QWidget):
                     self.gif_speed = settings.get('gif_speed', 100)
                     self.scaling_mode = settings.get('scaling_mode', 'fit')
                     self.advanced_settings = settings.get('advanced_settings', self.advanced_settings)
+                    self.scale_factor = self.advanced_settings.get('scale_factor', 1.0)
                     self.is_gif = self.image_path.lower().endswith('.gif') if self.image_path else False
                     self.update_gif_options_visibility()
 
@@ -1094,6 +1481,9 @@ class AnyOverlay(QtWidgets.QWidget):
             'scaling_mode': self.scaling_mode,
             'advanced_settings': self.advanced_settings
         }
+        
+        if self.overlay_window:
+            settings['advanced_settings']['scale_factor'] = self.overlay_window.scale_factor
         try:
             with open(self.settings_file, 'w') as f:
                 json.dump(settings, f)
@@ -1101,9 +1491,66 @@ class AnyOverlay(QtWidgets.QWidget):
             print(f"Error saving settings: {e}")
 
     def closeEvent(self, event):
-        keyboard.unhook_all_hotkeys()
+        try:
+            import keyboard
+            keyboard.unhook_all_hotkeys()
+        except ImportError:
+            pass
         self.save_settings()
         event.accept()
+
+    def increase_scale(self):
+        """
+        Increases the scale factor of the overlay image.
+        """
+        if self.scaling_mode == 'tile':
+            current_scale = self.advanced_settings.get('tile_scale', 1.0)
+            new_scale = current_scale + 0.1
+            if self.advanced_settings.get('enable_scale_limits', True):
+                new_scale = min(new_scale, 10.0)  
+            self.advanced_settings['tile_scale'] = new_scale
+        else:
+            new_scale = self.advanced_settings.get('scale_factor', 1.0) + 0.1
+            if self.advanced_settings.get('enable_scale_limits', True):
+                new_scale = min(new_scale, 10.0)  
+            self.advanced_settings['scale_factor'] = new_scale
+
+        self.save_settings()
+        if self.is_overlay_visible and self.overlay_window:
+            if self.scaling_mode == 'tile':
+                self.overlay_window.advanced_settings['tile_scale'] = self.advanced_settings['tile_scale']
+            else:
+                self.overlay_window.scale_factor = self.advanced_settings['scale_factor']
+            self.overlay_window.initImage()
+
+    def decrease_scale(self):
+        """
+        Decreases the scale factor of the overlay image.
+        """
+        if self.scaling_mode == 'tile':
+            current_scale = self.advanced_settings.get('tile_scale', 1.0)
+            new_scale = current_scale - 0.1
+            if self.advanced_settings.get('enable_scale_limits', True):
+                new_scale = max(new_scale, 0.1)  
+            self.advanced_settings['tile_scale'] = new_scale
+        else:
+            new_scale = self.advanced_settings.get('scale_factor', 1.0) - 0.1
+            if self.advanced_settings.get('enable_scale_limits', True):
+                new_scale = max(new_scale, 0.1)  
+            self.advanced_settings['scale_factor'] = new_scale
+
+        self.save_settings()
+        if self.is_overlay_visible and self.overlay_window:
+            if self.scaling_mode == 'tile':
+                self.overlay_window.advanced_settings['tile_scale'] = self.advanced_settings['tile_scale']
+            else:
+                self.overlay_window.scale_factor = self.advanced_settings['scale_factor']
+            self.overlay_window.initImage()
+
+
+    def wheelEvent(self, event):
+        
+        super().wheelEvent(event)
 
 
 if __name__ == '__main__':
